@@ -680,7 +680,7 @@
                             <i class="fa-solid fa-arrows-up-down text-emerald-400"></i>
                             Elevation Beam Drag Studio <span id="elevationSelectedGroupLabel" class="text-emerald-400 font-mono">(A1)</span>
                         </span>
-                        <span class="text-slate-400 text-[11px]">Click & drag any beam up/down to adjust vertical gap and top of beam (TOB) height &bull; Scroll down for joined configs</span>
+                        <span class="text-slate-400 text-[11px]">Click a beam to select &amp; use <span class="text-emerald-400 font-bold">&uarr;/&darr; Arrow Keys</span> to dial in height (Hold Shift for 6") &bull; Drag up/down</span>
                     </div>
                     <div class="flex items-center space-x-3">
                         <label class="flex items-center gap-1.5 text-slate-300 text-xs cursor-pointer">
@@ -984,6 +984,8 @@
         let draggedBeamLevelIndex = null;
         let hoveredBeamConfigIdx = null;
         let hoveredBeamLevelIndex = null;
+        let selectedBeamConfigIdx = null;
+        let selectedBeamLevelIdx = null;
 
         let scene, camera, renderer, rackMeshGroup;
         let is3DRotationOn = false;
@@ -1026,6 +1028,22 @@
                     return;
                 }
 
+                if (activeTab === 'tab-elevation' && selectedBeamConfigIdx !== null && selectedBeamLevelIdx !== null) {
+                    if (['ArrowUp', 'ArrowDown'].includes(e.key)) {
+                        e.preventDefault();
+                        const step = e.shiftKey ? 6 : 1;
+                        const delta = (e.key === 'ArrowUp') ? step : -step;
+                        nudgeSelectedBeamHeight(delta);
+                        return;
+                    }
+                    if (e.key === 'Escape') {
+                        selectedBeamConfigIdx = null;
+                        selectedBeamLevelIdx = null;
+                        renderElevation();
+                        return;
+                    }
+                }
+
                 if (activeTab === 'tab-floorplan') {
                     // Spacebar rotates 45 degrees
                     if (e.code === 'Space' || e.key === ' ') {
@@ -1063,7 +1081,107 @@
                     menu.classList.add('hidden');
                 }
             });
+
+            // BOM Keyboard Navigation Listener (Part # -> Unit Cost -> Unit Price -> Next Row Part #)
+            document.addEventListener('keydown', function(e) {
+                if (e.key !== 'Tab' && e.key !== 'Enter') return;
+                const target = e.target;
+                if (!target || typeof target.getAttribute !== 'function') return;
+                const field = target.getAttribute('data-bom-field');
+                if (field !== 'partNo' && field !== 'unitCost' && field !== 'unitPrice') return;
+
+                const tbody = getEl('bomTableBody');
+                if (!tbody || !tbody.contains(target)) return;
+
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const navGrid = [];
+
+                rows.forEach(tr => {
+                    const partNoEl = tr.querySelector('[data-bom-field="partNo"]');
+                    const costEl = tr.querySelector('[data-bom-field="unitCost"]');
+                    const priceEl = tr.querySelector('[data-bom-field="unitPrice"]');
+                    if (partNoEl && costEl && priceEl) {
+                        navGrid.push({ partNo: partNoEl, unitCost: costEl, unitPrice: priceEl });
+                    }
+                });
+
+                let currentRowIdx = -1;
+                let currentField = null;
+
+                for (let r = 0; r < navGrid.length; r++) {
+                    if (navGrid[r].partNo === target) { currentRowIdx = r; currentField = 'partNo'; break; }
+                    if (navGrid[r].unitCost === target) { currentRowIdx = r; currentField = 'unitCost'; break; }
+                    if (navGrid[r].unitPrice === target) { currentRowIdx = r; currentField = 'unitPrice'; break; }
+                }
+
+                if (currentRowIdx === -1) return;
+
+                let nextTargetEl = null;
+                let nextTargetMeta = null;
+
+                if (!e.shiftKey) {
+                    if (currentField === 'partNo') {
+                        nextTargetEl = navGrid[currentRowIdx].unitCost;
+                        nextTargetMeta = { rowIdx: currentRowIdx, field: 'unitCost' };
+                    } else if (currentField === 'unitCost') {
+                        nextTargetEl = navGrid[currentRowIdx].unitPrice;
+                        nextTargetMeta = { rowIdx: currentRowIdx, field: 'unitPrice' };
+                    } else if (currentField === 'unitPrice') {
+                        if (currentRowIdx + 1 < navGrid.length) {
+                            nextTargetEl = navGrid[currentRowIdx + 1].partNo;
+                            nextTargetMeta = { rowIdx: currentRowIdx + 1, field: 'partNo' };
+                        }
+                    }
+                } else {
+                    if (currentField === 'unitPrice') {
+                        nextTargetEl = navGrid[currentRowIdx].unitCost;
+                        nextTargetMeta = { rowIdx: currentRowIdx, field: 'unitCost' };
+                    } else if (currentField === 'unitCost') {
+                        nextTargetEl = navGrid[currentRowIdx].partNo;
+                        nextTargetMeta = { rowIdx: currentRowIdx, field: 'partNo' };
+                    } else if (currentField === 'partNo') {
+                        if (currentRowIdx - 1 >= 0) {
+                            nextTargetEl = navGrid[currentRowIdx - 1].unitPrice;
+                            nextTargetMeta = { rowIdx: currentRowIdx - 1, field: 'unitPrice' };
+                        }
+                    }
+                }
+
+                if (nextTargetEl && nextTargetMeta) {
+                    e.preventDefault();
+                    window.pendingBomFocus = nextTargetMeta;
+                    nextTargetEl.focus();
+                    if (typeof nextTargetEl.select === 'function') {
+                        nextTargetEl.select();
+                    }
+                }
+            });
         };
+
+        function nudgeSelectedBeamHeight(deltaInches) {
+            if (selectedBeamConfigIdx === null || selectedBeamLevelIdx === null) return;
+            const group = getActiveGroup();
+            const constituentConfigs = getConstituentConfigsForGroup(group);
+            const cfg = constituentConfigs[selectedBeamConfigIdx];
+            if (!cfg || !cfg.beamLevels || !cfg.beamLevels[selectedBeamLevelIdx]) return;
+
+            const bIdx = selectedBeamLevelIdx;
+            let newHeightInches = cfg.beamLevels[bIdx].height + deltaInches;
+
+            const prevHeight = bIdx === 0 ? 12 : cfg.beamLevels[bIdx - 1].height + 6;
+            const nextHeight = bIdx === cfg.beamLevels.length - 1 ? cfg.uprightHeight : cfg.beamLevels[bIdx + 1].height - 6;
+
+            newHeightInches = Math.max(prevHeight, Math.min(nextHeight, newHeightInches));
+
+            if (cfg.beamLevels[bIdx].height !== newHeightInches) {
+                cfg.beamLevels[bIdx].height = newHeightInches;
+                renderElevation();
+                renderBeamLevelsContainer();
+                calculatePalletPositions();
+                renderBOMTable();
+                if (activeTab === 'tab-3d' && is3DInitialized) render3DRack();
+            }
+        }
 
         function nudgeSelectedItem(dxFt, dyFt) {
             const facW_Ft = parseFloat(getEl('facWidth')?.value) || 220;
@@ -1417,8 +1535,15 @@
                     isDraggingBeamLevel = true;
                     draggedBeamConfigIdx = target.configIdx;
                     draggedBeamLevelIndex = target.beamIdx;
+                    selectedBeamConfigIdx = target.configIdx;
+                    selectedBeamLevelIdx = target.beamIdx;
                     joinedSegmentActiveIdx = target.configIdx;
                     canvas.style.cursor = 'ns-resize';
+                    renderElevation();
+                    renderBeamLevelsContainer();
+                } else {
+                    selectedBeamConfigIdx = null;
+                    selectedBeamLevelIdx = null;
                     renderElevation();
                     renderBeamLevelsContainer();
                 }
@@ -1595,15 +1720,21 @@
                 const beamPxH = Math.max(6, faceInches * scaleY);
 
                 const isHoveredOrDragged = isHoveredFn ? isHoveredFn(idx) : false;
+                const constituentConfigs = getConstituentConfigsForGroup(getActiveGroup());
+                const isSelected = (selectedBeamConfigIdx !== null && constituentConfigs[selectedBeamConfigIdx] === subGroup && selectedBeamLevelIdx === idx);
 
-                ctx.fillStyle = isHoveredOrDragged ? '#0284c7' : subGroup.beamColor;
+                ctx.fillStyle = isSelected ? '#10b981' : (isHoveredOrDragged ? '#0284c7' : subGroup.beamColor);
                 ctx.fillRect(startX_Front + colWidth, beamY, frontViewWidth - colWidth * 2, beamPxH);
 
-                ctx.fillStyle = isHoveredOrDragged ? '#0369a1' : '#475569';
+                ctx.fillStyle = isSelected ? '#047857' : (isHoveredOrDragged ? '#0369a1' : '#475569');
                 ctx.fillRect(startX_Front, beamY - 2, colWidth + 2, beamPxH + 4);
                 ctx.fillRect(startX_Front + frontViewWidth - colWidth - 2, beamY - 2, colWidth + 2, beamPxH + 4);
 
-                if (isHoveredOrDragged) {
+                if (isSelected) {
+                    ctx.strokeStyle = '#22c55e';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(startX_Front + colWidth - 2, beamY - 2, frontViewWidth - colWidth * 2 + 4, beamPxH + 4);
+                } else if (isHoveredOrDragged) {
                     ctx.strokeStyle = '#38bdf8';
                     ctx.lineWidth = 2;
                     ctx.strokeRect(startX_Front + colWidth - 1, beamY - 1, frontViewWidth - colWidth * 2 + 2, beamPxH + 2);
@@ -1659,29 +1790,31 @@
                     const pitch = lvl.height - prevTob;
 
                     const badgeX = startX_Front + frontViewWidth + 25;
-                    const badgeText = `L${levelNum}: ${lvl.faceHeight} @ ${lvl.height}" (${pitch}" vert. gap)`;
+                    const badgeText = isSelected 
+                        ? `L${levelNum}: ${lvl.faceHeight} @ ${lvl.height}" [SELECTED - Use \u2191/\u2193]` 
+                        : `L${levelNum}: ${lvl.faceHeight} @ ${lvl.height}" (${pitch}" vert. gap)`;
 
                     ctx.font = 'bold 10px JetBrains Mono';
                     const textMetrics = ctx.measureText(badgeText);
                     const badgeW = textMetrics.width + 18;
                     const badgeH = 22;
 
-                    ctx.fillStyle = isHoveredOrDragged ? '#f0f9ff' : '#ffffff';
-                    ctx.strokeStyle = isHoveredOrDragged ? '#0284c7' : '#0284c7';
-                    ctx.lineWidth = isHoveredOrDragged ? 2.0 : 1.2;
+                    ctx.fillStyle = isSelected ? '#dcfce7' : (isHoveredOrDragged ? '#f0f9ff' : '#ffffff');
+                    ctx.strokeStyle = isSelected ? '#16a34a' : (isHoveredOrDragged ? '#0284c7' : '#0284c7');
+                    ctx.lineWidth = isSelected ? 2.5 : (isHoveredOrDragged ? 2.0 : 1.2);
                     
                     ctx.beginPath();
                     if (ctx.roundRect) ctx.roundRect(badgeX, beamY - badgeH / 2, badgeW, badgeH, 5);
                     else ctx.rect(badgeX, beamY - badgeH / 2, badgeW, badgeH);
                     ctx.fill(); ctx.stroke();
 
-                    ctx.fillStyle = isHoveredOrDragged ? '#0369a1' : '#0284c7';
+                    ctx.fillStyle = isSelected ? '#15803d' : (isHoveredOrDragged ? '#0369a1' : '#0284c7');
                     ctx.textAlign = 'left';
                     ctx.fillText(badgeText, badgeX + 9, beamY + 3.5);
 
-                    ctx.strokeStyle = isHoveredOrDragged ? '#0284c7' : '#0284c7';
+                    ctx.strokeStyle = isSelected ? '#16a34a' : (isHoveredOrDragged ? '#0284c7' : '#0284c7');
                     ctx.setLineDash([2, 2]);
-                    ctx.beginPath(); ctx.moveTo(startX_Front + frontViewWidth, beamY + beamPxH / 2); ctx.lineTo(badgeX, beamY + badgeH / 2); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(startX_Front + frontViewWidth, beamY + beamPxH / 2); ctx.lineTo(badgeX, badgeH / 2 + (beamY - badgeH / 2)); ctx.stroke();
                     ctx.setLineDash([]);
                 }
             });
@@ -4194,8 +4327,19 @@
                 const prevTob = idx === 0 ? 0 : group.beamLevels[idx - 1].height;
                 const incrementalPitch = Math.max(12, lvl.height - prevTob);
 
+                const isSelectedInSidebar = (selectedBeamConfigIdx !== null && constituentConfigs[selectedBeamConfigIdx] === group && selectedBeamLevelIdx === idx);
+
                 const div = document.createElement('div');
-                div.className = 'flex items-center gap-2 bg-slate-900/90 p-2 rounded-lg border border-slate-800 hover:border-slate-700 transition shadow-sm';
+                div.className = `flex items-center gap-2 p-2 rounded-lg border transition shadow-sm ${isSelectedInSidebar ? 'bg-emerald-950/80 border-emerald-500 ring-1 ring-emerald-500' : 'bg-slate-900/90 border-slate-800 hover:border-slate-700'}`;
+                div.onclick = (e) => {
+                    if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT' && e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
+                        const subGroupIdx = constituentConfigs.indexOf(group);
+                        selectedBeamConfigIdx = subGroupIdx >= 0 ? subGroupIdx : 0;
+                        selectedBeamLevelIdx = idx;
+                        renderElevation();
+                        renderBeamLevelsContainer();
+                    }
+                };
                 div.innerHTML = `
                     <div class="flex-1 min-w-0">
                         <span class="text-[10px] text-slate-300 block font-semibold truncate mb-1">${idx === 0 ? 'Floor &rarr; B1' : `B${idx} &rarr; B${idx+1}`} Vert. Gap</span>
@@ -4275,6 +4419,12 @@
 
             if (group.beamLevels.length <= 1) return;
             group.beamLevels.splice(idx, 1);
+
+            if (selectedBeamLevelIdx === idx) {
+                selectedBeamLevelIdx = null;
+                selectedBeamConfigIdx = null;
+            }
+
             renderBeamLevelsContainer();
             calculatePalletPositions();
             refreshActiveView();
